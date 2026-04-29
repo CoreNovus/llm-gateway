@@ -1,0 +1,119 @@
+---
+# Deploy topology — both containers bind to 127.0.0.1; the SSH tunnel is
+# the auth boundary. NO public ports.
+#
+# Topology:
+#   SSH tunnel (-L 8000:127.0.0.1:8000)
+#       ↓
+#   [host 127.0.0.1:8000]
+#       ↓
+#   [gateway container, port 8000] (this repo's llm_gateway FastAPI app)
+#       ↓ http://vllm:8000  (Docker bridge network — internal only)
+#   [vllm container, port 8000, NO host publish]
+#       ↓
+#   GPU + Qwen2.5-7B-Instruct-AWQ
+#
+# Operator setup:
+#   1. cp .env.example .env     # populate BEARER_TOKEN; HF_TOKEN optional
+#   2. docker compose up -d
+#   3. ssh -L 8000:127.0.0.1:8000 ec2-user@<eip>   (from your laptop)
+#   4. curl -H "Authorization: Bearer $TOKEN" https://localhost:8000/health
+#
+# Stop / drain:
+#   docker compose down
+
+services:
+  vllm:
+    # Pin a specific tag in production — `latest` is convenient for a
+    # first-boot smoke-test but defeats reproducible deploys. Flip to
+    # the version you have actually validated against the model.
+    image: vllm/vllm-openai:latest
+    container_name: llm-gateway-vllm
+    restart: unless-stopped
+    # The vendor image owns its own USER so we don't override; what we
+    # CAN tighten is privilege escalation + capabilities. The NVIDIA
+    # runtime hook already adds the device-cgroup it needs; nothing
+    # else does.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # No `ports:` — vLLM is reachable only via the Docker bridge under
+    # the `vllm` hostname. The gateway is the sole external entry point.
+    volumes:
+      # Bind to the persistent data volume the host bootstrap mounts at
+      # /models so weights survive instance stop/start and are not
+      # stuck on the root volume.
+      - ${LLM_GATEWAY_HF_CACHE_DIR:-/models/hf-cache}:/root/.cache/huggingface
+    environment:
+      # vLLM checks this when downloading gated models. Empty for public
+      # models like Qwen2.5-7B-Instruct-AWQ.
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    command:
+      - --model=Qwen/Qwen2.5-7B-Instruct-AWQ
+      - --served-model-name=selfhost-qwen
+      - --host=0.0.0.0
+      - --port=8000
+      - --max-model-len=8192
+      - --gpu-memory-utilization=0.90
+      - --max-num-seqs=4
+      - --enable-prefix-caching
+      - --tool-call-parser=hermes
+      # --trust-remote-code intentionally NOT set. Qwen2.5-Instruct
+      # + AWQ are natively supported by vLLM; the flag would let the
+      # HF repo execute arbitrary Python at model-load time. Add it
+      # back ONLY if a future model genuinely requires custom modelling
+      # code, and document that decision in deploy/README.md.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Cold model load on L4 takes 1–2 min; give it room before the
+      # gateway is told vLLM is unhealthy.
+      start_period: 180s
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: llm-gateway
+    restart: unless-stopped
+    depends_on:
+      vllm:
+        condition: service_healthy
+    # Container hardening — defence-in-depth on top of the
+    # SSH-tunnel-only network boundary.
+    user: "1001:1001"            # llm:llm from the Dockerfile
+    read_only: true              # rootfs is immutable; uvicorn writes nowhere
+    tmpfs:
+      - /tmp:size=64m,mode=1777  # uvicorn / httpx / pip occasionally need /tmp
+    cap_drop:
+      - ALL                      # gateway needs no Linux capabilities
+    security_opt:
+      - no-new-privileges:true   # block setuid escalation paths
+    ports:
+      # 127.0.0.1 ONLY — public 0.0.0.0 binding here would defeat the
+      # SSH-tunnel auth boundary.
+      - "127.0.0.1:8000:8000"
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8000
+      - VLLM_UPSTREAM_URL=http://vllm:8000
+      - BEARER_TOKEN=${BEARER_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
+      - CIRCUIT_BREAKER_ENABLED=${CIRCUIT_BREAKER_ENABLED:-true}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

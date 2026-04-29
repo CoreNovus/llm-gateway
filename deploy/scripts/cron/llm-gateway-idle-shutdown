@@ -1,0 +1,4 @@
+# Drop into /etc/cron.d/ via deploy/scripts/install.sh.
+# Runs every 10 minutes; the script itself counts consecutive idle
+# samples — six in a row (≈ 60 min) trigger shutdown.
+*/10 * * * * root /opt/llm-gateway/deploy/scripts/idle-shutdown.sh

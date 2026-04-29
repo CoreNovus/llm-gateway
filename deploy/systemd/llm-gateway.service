@@ -1,0 +1,29 @@
+[Unit]
+Description=llm-gateway gateway + vLLM (docker compose)
+Documentation=https://github.com/CoreNovus/llm-gateway/blob/main/deploy/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/llm-gateway/deploy
+EnvironmentFile=/opt/llm-gateway/deploy/.env
+# `--no-color` keeps journal output clean; `up` (no -d) keeps the
+# process in the foreground so systemd manages its lifetime.
+ExecStartPre=/usr/bin/docker compose --no-color pull
+ExecStart=/usr/bin/docker compose --no-color up
+ExecStop=/usr/bin/docker compose --no-color down
+
+# Restart on engine crash, but back off so a flapping vLLM doesn't
+# pin the GPU loading weights repeatedly.
+Restart=on-failure
+RestartSec=30
+
+# Drain in-flight requests on SIGTERM. uvicorn + lifespan handle this
+# inside the gateway container; compose forwards the signal cleanly.
+KillMode=mixed
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
