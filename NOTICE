@@ -1,0 +1,16 @@
+llm-gateway
+Copyright 2026 CoreNovus contributors
+
+Licensed under the MIT License — see LICENSE for the full text.
+
+This product is a thin FastAPI proxy in front of vLLM, an open-source
+LLM serving engine (https://github.com/vllm-project/vllm) developed
+by the vLLM project and licensed under the Apache License, Version 2.0:
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+This product does not redistribute the vLLM engine itself; vLLM is
+expected to be supplied by the operator (vendor Docker container) at
+deploy time. References to vLLM in code, documentation, and examples
+are nominative and do not imply endorsement by or affiliation with
+the vLLM project.
