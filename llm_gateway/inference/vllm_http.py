@@ -92,12 +92,23 @@ class VLLMHTTPBackend:
             ) from exc
 
         if response.status_code >= 500:
-            await response.aread()
-            await response.aclose()
+            # ``aread()`` can raise (network drop while reading the error
+            # body, decode error on a compressed body, idle timeout). Use
+            # try/finally so the response — and its httpx connection — is
+            # always returned to the pool. Without this, a hostile
+            # upstream that 500s and then drops the connection mid-read
+            # leaks a connection on every request.
+            try:
+                await response.aread()
+            finally:
+                await response.aclose()
             raise UpstreamUnavailableError(f"vLLM upstream returned {response.status_code}")
         if response.status_code >= 400:
-            body_bytes = await response.aread()
-            await response.aclose()
+            body_bytes = b""
+            try:
+                body_bytes = await response.aread()
+            finally:
+                await response.aclose()
             try:
                 body = json.loads(body_bytes)
             except ValueError:
