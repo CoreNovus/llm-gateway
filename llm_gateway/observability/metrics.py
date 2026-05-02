@@ -97,3 +97,15 @@ class Metrics:
         # Initialise to 0 (closed) so dashboards have a value before the
         # first state transition.
         self.circuit_breaker_state.set(0)
+
+        self.circuit_breaker_enabled = Gauge(
+            "llm_gateway_circuit_breaker_enabled",
+            "Circuit breaker feature flag (1=enabled, 0=disabled).",
+            registry=self.registry,
+        )
+        # Default 0 — composition-root flips to 1 when wiring the breaker
+        # so dashboards can mask ``circuit_breaker_state`` (which stays
+        # at 0/closed forever when the feature is off, giving an
+        # operator the misleading impression that the breaker is
+        # "closed and healthy" when in fact it does not exist).
+        self.circuit_breaker_enabled.set(0)

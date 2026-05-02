@@ -65,6 +65,7 @@ def _build_backend(settings: Settings, metrics: Metrics) -> InferenceBackend:
             cooldown_s=settings.circuit_breaker_cooldown_s,
             on_state_change=_on_state_change,
         )
+        metrics.circuit_breaker_enabled.set(1)
     return backend
 
 
