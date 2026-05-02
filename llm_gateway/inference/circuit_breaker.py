@@ -30,6 +30,7 @@ Production wiring is one line in :func:`__main__.main`:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Literal
@@ -68,6 +69,14 @@ class CircuitBreakerBackend:
         self._last_observed_state: CircuitState = "closed"
         self._consecutive_failures = 0
         self._opened_at: float | None = None
+        # Serialises mutations to (_consecutive_failures, _opened_at,
+        # _last_observed_state). Without it, two concurrent failures
+        # can lose an increment ("read 4, read 4, write 5, write 5"),
+        # so the breaker opens one tick later than the threshold says.
+        # Critical sections are tiny (counter / timestamp assignments);
+        # the ``on_state_change`` callback fires OUTSIDE the lock so a
+        # re-entrant callback cannot deadlock.
+        self._lock = asyncio.Lock()
 
     def state(self) -> CircuitState:
         """Return the current breaker state.
@@ -91,51 +100,76 @@ class CircuitBreakerBackend:
         return await self._inner.ping()
 
     async def complete(self, request: dict[str, Any]) -> dict[str, Any]:
-        self._raise_if_open()
+        await self._raise_if_open()
         try:
             result = await self._inner.complete(request)
         except UpstreamUnavailableError:
-            self._record_failure()
+            await self._record_failure()
             raise
         # UpstreamClientError propagates without counting (4xx is the
         # caller's fault, not the engine's).
-        self._record_success()
+        await self._record_success()
         return result
 
     async def stream(self, request: dict[str, Any]) -> AsyncIterator[bytes]:
-        self._raise_if_open()
+        await self._raise_if_open()
         try:
             iterator = await self._inner.stream(request)
         except UpstreamUnavailableError:
-            self._record_failure()
+            await self._record_failure()
             raise
-        self._record_success()
+        await self._record_success()
         return iterator
 
     # ── internal state machine ──────────────────────────────────────────
 
-    def _raise_if_open(self) -> None:
+    async def _raise_if_open(self) -> None:
         # ``state()`` may transition open → half-open silently when the
         # cooldown elapses; emit a hook for that too so dashboards see
         # the gauge drop without waiting for the next success.
-        self._emit_state_change()
-        if self.state() == "open":
+        is_open, callback_state = await self._snapshot_and_observe()
+        if callback_state is not None and self._on_state_change is not None:
+            self._on_state_change(callback_state)
+        if is_open:
             raise UpstreamUnavailableError("circuit_breaker_open: upstream is failing fast")
 
-    def _record_success(self) -> None:
-        self._consecutive_failures = 0
-        self._opened_at = None
-        self._emit_state_change()
+    async def _record_success(self) -> None:
+        callback_state: CircuitState | None = None
+        async with self._lock:
+            self._consecutive_failures = 0
+            self._opened_at = None
+            current = self.state()
+            if current != self._last_observed_state:
+                self._last_observed_state = current
+                callback_state = current
+        if callback_state is not None and self._on_state_change is not None:
+            self._on_state_change(callback_state)
 
-    def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self._failure_threshold:
-            self._opened_at = self._clock()
-        self._emit_state_change()
+    async def _record_failure(self) -> None:
+        callback_state: CircuitState | None = None
+        async with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._failure_threshold:
+                self._opened_at = self._clock()
+            current = self.state()
+            if current != self._last_observed_state:
+                self._last_observed_state = current
+                callback_state = current
+        if callback_state is not None and self._on_state_change is not None:
+            self._on_state_change(callback_state)
 
-    def _emit_state_change(self) -> None:
-        current = self.state()
-        if current != self._last_observed_state:
-            self._last_observed_state = current
-            if self._on_state_change is not None:
-                self._on_state_change(current)
+    async def _snapshot_and_observe(self) -> tuple[bool, CircuitState | None]:
+        """Read the current state under the lock, return ``(is_open, callback_state)``.
+
+        ``callback_state`` is non-None only when the observed state
+        changed since the last observation — caller fires the
+        ``on_state_change`` hook OUTSIDE the lock so a re-entrant
+        callback cannot deadlock the breaker.
+        """
+        callback_state: CircuitState | None = None
+        async with self._lock:
+            current = self.state()
+            if current != self._last_observed_state:
+                self._last_observed_state = current
+                callback_state = current
+            return current == "open", callback_state
