@@ -29,7 +29,10 @@ packages = [{ include = "llm_gateway" }]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "^0.115.0"
+fastapi = ">=0.121.3,<0.122.0"  # <0.122 avoids the HTTP 403 -> 401 change in fastapi.security; bumped from 0.115 to enable starlette 0.49+.
+# starlette: directly pinned to close GHSA-7f5h-v6xp-fcq8 (O(n^2) DoS via Range header merging in FileResponse)
+# and GHSA-2c2j-9gv5-cj73 (DoS via large multipart files).
+starlette = "^0.49.1"
 uvicorn = { extras = ["standard"], version = "^0.32.0" }
 pydantic = "^2.9.0"
 pydantic-settings = "^2.6.0"
@@ -38,7 +41,10 @@ prometheus-client = "^0.21.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.3"
-pytest-asyncio = "^0.23.0"
+# pytest-asyncio >=1.0 required for pytest 9 compat: pytest 9's `Package` collector ABI change crashes
+# pytest_asyncio.plugin.pytest_collectstart in 0.23.x. Bumped together with the starlette security fix
+# because test collection is otherwise broken on this repo.
+pytest-asyncio = "^1.3.0"
 respx = "^0.21.0"
 ruff = "^0.7.0"
 black = "^26.3.1"
