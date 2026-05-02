@@ -11,12 +11,15 @@ down.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
 from llm_gateway.inference.errors import UpstreamClientError, UpstreamUnavailableError
+
+logger = logging.getLogger(__name__)
 
 
 class VLLMHTTPBackend:
@@ -43,10 +46,21 @@ class VLLMHTTPBackend:
         await self._client.aclose()
 
     async def ping(self) -> bool:
-        """vLLM exposes ``/health``; treat any response other than 200 as down."""
+        """vLLM exposes ``/health``; treat any response other than 200 as down.
+
+        Connectivity errors (timeout, refused, DNS, TLS) are logged at
+        WARNING so an operator staring at a flapping ``/ready`` gauge
+        can see the cause without enabling debug-level logging on the
+        whole package.
+        """
         try:
             response = await self._client.get(self._HEALTH_PATH)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "vLLM upstream ping failed: %s — %s",
+                type(exc).__name__,
+                exc,
+            )
             return False
         return response.status_code == 200
 
