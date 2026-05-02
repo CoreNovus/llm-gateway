@@ -1,0 +1,45 @@
+# Pre-commit hooks — the same gates CI runs, but local and fast.
+#
+# Install once per checkout:
+#     pre-commit install
+#
+# Run all hooks ad hoc:
+#     pre-commit run --all-files
+#
+# Versions pinned to exact SHA / tag so contributors get reproducible
+# behaviour; bump deliberately rather than tracking ``main``.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Match the ruff version pinned in pyproject.toml's dev-deps so
+    # local + CI behaviour does not drift between operators.
+    rev: v0.7.0
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 26.3.1
+    hooks:
+      - id: black
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        # Allow first-run when the baseline does not yet exist.
+        exclude: ^\.secrets\.baseline$
