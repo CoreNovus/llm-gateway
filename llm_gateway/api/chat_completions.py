@@ -119,14 +119,31 @@ def _record_token_usage(metrics: Metrics, model: str, response: dict) -> None:
     (and only if ``stream_options={"include_usage":true}`` is set);
     instrumenting that path is deliberately out of scope here so the
     proxy stays a verbatim passthrough.
+
+    Defensive on the upstream payload: a buggy or hostile vLLM that
+    returns ``{"usage": {"prompt_tokens": "abc"}}`` must NOT raise out
+    of this telemetry hook and surface as a 500 to the client. We
+    treat any non-numeric value as a missing observation (0).
     """
     usage = response.get("usage") or {}
-    prompt = int(usage.get("prompt_tokens", 0) or 0)
-    completion = int(usage.get("completion_tokens", 0) or 0)
+    prompt = _safe_token_count(usage.get("prompt_tokens"))
+    completion = _safe_token_count(usage.get("completion_tokens"))
     if prompt:
         metrics.tokens_prompt_total.labels(model=model).inc(prompt)
     if completion:
         metrics.tokens_completion_total.labels(model=model).inc(completion)
+
+
+def _safe_token_count(value: object) -> int:
+    """Coerce an upstream token-count field to a non-negative ``int``.
+
+    Returns 0 for ``None`` / missing / non-numeric / negative values.
+    """
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, count)
 
 
 def _client_error_response(exc: UpstreamClientError) -> JSONResponse:
@@ -161,11 +178,23 @@ def _extract_upstream_message(body: dict) -> str:
     """Return the upstream's human message, length-capped, or a fallback.
 
     Accepts both the OpenAI-style ``{"error": {"message": "..."}}``
-    shape and the bare-string ``"some text"`` form vLLM occasionally
-    emits. Anything else collapses to a generic placeholder so the
-    caller always gets a string.
+    shape and the bare-string ``{"error": "some text"}`` form vLLM
+    occasionally emits. Anything else collapses to a generic
+    placeholder so the caller always gets a string.
+
+    Previously this called ``body.get("error", {}).get("message")``
+    which raised ``AttributeError`` on the bare-string shape (str has
+    no ``.get``) — defeating the documented fallback.
     """
-    raw = body.get("error", {}).get("message") if isinstance(body, dict) else None
+    if not isinstance(body, dict):
+        return "Upstream returned an error."
+    err = body.get("error")
+    if isinstance(err, dict):
+        raw = err.get("message")
+    elif isinstance(err, str):
+        raw = err
+    else:
+        raw = None
     if not isinstance(raw, str) or not raw:
         return "Upstream returned an error."
     return raw[:_UPSTREAM_MESSAGE_MAX_LEN]
