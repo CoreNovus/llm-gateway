@@ -19,7 +19,7 @@ dashes), and short alphanumeric tags.
 
 import re
 import uuid
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 
 CORRELATION_HEADER = "X-Correlation-ID"
 
@@ -34,15 +34,36 @@ _correlation_id_var: ContextVar[str | None] = ContextVar(
     default=None,
 )
 
+CorrelationToken = Token[str | None]
+
 
 def current_correlation_id() -> str | None:
     """Return the correlation_id for the current request, or ``None``."""
     return _correlation_id_var.get()
 
 
-def set_correlation_id(correlation_id: str) -> None:
-    """Set the correlation_id for the current request scope."""
-    _correlation_id_var.set(correlation_id)
+def set_correlation_id(correlation_id: str) -> CorrelationToken:
+    """Set the correlation_id for the current request scope.
+
+    Returns the :class:`contextvars.Token` from the underlying
+    ``ContextVar.set`` call so the caller can pair it with
+    :func:`reset_correlation_id` in a ``finally`` block. Old callers
+    that ignored the return value remain correct — the contextvar
+    still updates — but they leak the previous request's id into
+    same-task work that fires after the response (e.g. FastAPI
+    ``BackgroundTasks``). The middleware now resets explicitly.
+    """
+    return _correlation_id_var.set(correlation_id)
+
+
+def reset_correlation_id(token: CorrelationToken) -> None:
+    """Restore the correlation_id to its previous value.
+
+    Pair with :func:`set_correlation_id` in a ``try``/``finally`` so
+    the contextvar does not leak across requests / background tasks
+    that share the same asyncio task.
+    """
+    _correlation_id_var.reset(token)
 
 
 def new_correlation_id() -> str:
