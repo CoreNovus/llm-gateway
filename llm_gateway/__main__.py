@@ -75,6 +75,13 @@ def main() -> None:
     :func:`create_app`. ``/ready`` returns 503 while vLLM is
     unreachable, which is the correct status — operators look at
     /ready to know when the stack is genuinely usable.
+
+    Uvicorn hardening flags below are *defence in depth* on top of the
+    127.0.0.1 bind + SSH-tunnel boundary documented in README.md.
+    They make sure that if anyone ever lifts the gateway off loopback
+    without re-reading the threat model, uvicorn does not silently
+    trust X-Forwarded-* headers from arbitrary callers and does not
+    leak the server stack version through response headers.
     """
     settings = get_settings()
     _require_bearer_token(settings.bearer_token)
@@ -87,6 +94,17 @@ def main() -> None:
         host=settings.server_host,
         port=settings.server_port,
         log_level=settings.log_level.lower(),
+        # Never trust X-Forwarded-* — the gateway is the trust boundary.
+        # If a future deploy puts a real proxy in front, the operator
+        # must explicitly opt in by setting these to True + naming the
+        # proxy IPs in ``forwarded_allow_ips``.
+        proxy_headers=False,
+        forwarded_allow_ips="127.0.0.1",
+        # Drop ``Server: uvicorn`` and ``Date`` from responses. The
+        # version string is fingerprintable (CVE catalogue lookup);
+        # ``Date`` is redundant with the operator's own log timestamps.
+        server_header=False,
+        date_header=False,
     )
 
 
