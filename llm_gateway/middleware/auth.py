@@ -9,8 +9,11 @@ NoopBackend doesn't need a real token). Production CDK refuses to deploy
 without a populated Secrets Manager value, so an empty token can only
 appear during local development.
 
-Skip paths: ``/health`` and ``/ready`` always bypass auth so K8s-style
-liveness / readiness probes work without credentials.
+Skip paths: ``/metrics``, ``/health``, and ``/ready`` always bypass
+auth so a Prometheus scraper and K8s-style liveness / readiness
+probes work without credentials. The gateway binds to ``127.0.0.1``,
+so the SSH-tunnel boundary already gates network access to those
+endpoints.
 """
 
 import hmac
