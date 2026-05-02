@@ -184,8 +184,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _key_from_request(request: Request) -> str:
         """Use a token-derived hash as the key; fall back to client IP.
 
-        We hash the bearer with a truncated SHA-256 rather than storing
-        the plaintext token in :class:`InMemoryTokenBucket._buckets`.
+        We hash the bearer with SHA-256 rather than storing the
+        plaintext token in :class:`InMemoryTokenBucket._buckets`.
         That bucket dict otherwise lives in process memory keyed by
         the secret itself — a core dump or memory-inspection at a
         hostile time would leak every active token. Hashing is cheap
@@ -194,12 +194,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         With a single shared token the bucket effectively limits the
         whole gateway. With per-tenant tokens it automatically scopes
         per-tenant — no middleware change.
+
+        The digest is truncated to 32 hex chars (128 bits). 64 bits
+        hits a 50%-birthday-collision wall at ~4.3B unique tokens —
+        far beyond any realistic deployment, but a token-cracker who
+        knows the truncation could grind for a colliding token to
+        share a quota bucket. 128 bits closes that grinding attack
+        for the same memory cost in OrderedDict.
         """
         header = request.headers.get("authorization", "")
         prefix = "Bearer "
         if header.startswith(prefix):
             token = header[len(prefix) :].strip()
-            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
             return f"token:{digest}"
         client = request.client
         return f"ip:{client.host if client else 'unknown'}"
