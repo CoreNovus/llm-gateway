@@ -60,14 +60,28 @@ def test_health_path_is_never_capped() -> None:
     assert response.status_code == 200
 
 
-# ─── BOUNDARY: malformed Content-Length header treated as zero ─────────────
+# ─── BOUNDARY: malformed Content-Length header is now rejected ─────────────
 
 
-def test_malformed_content_length_header_treated_as_zero() -> None:
-    """A bogus Content-Length is reset to 0; the body is then small enough
-    to pass the cap. The protocol layer (Starlette) rejects truly broken
-    framing earlier; we just don't crash on a non-int header value."""
+def test_malformed_content_length_header_returns_400() -> None:
+    """A non-int Content-Length is refused with 400. Previously the
+    middleware silently zeroed the value and forwarded the request,
+    letting a hostile client bypass the cap by sending an unparseable
+    header (the body could be arbitrarily large, the cap-comparison
+    saw 0)."""
     response = _client(max_bytes=1024).post(
         "/v1/anything", content="x" * 100, headers={"Content-Length": "not-an-int"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "invalid_content_length"
+
+
+def test_negative_content_length_returns_400() -> None:
+    """A syntactically-valid but negative Content-Length is also refused."""
+    response = _client(max_bytes=1024).post(
+        "/v1/anything", content="x" * 100, headers={"Content-Length": "-1"}
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "invalid_content_length"
