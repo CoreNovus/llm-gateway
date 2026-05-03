@@ -60,9 +60,7 @@ class ChatMessage(BaseModel):
         responsibility to validate.
         """
         if isinstance(value, str) and len(value) > _MAX_CONTENT_CHARS:
-            raise ValueError(
-                f"content exceeds {_MAX_CONTENT_CHARS} chars (got {len(value)})"
-            )
+            raise ValueError(f"content exceeds {_MAX_CONTENT_CHARS} chars (got {len(value)})")
         return value
 
 
@@ -72,16 +70,12 @@ class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     model: str = Field(..., min_length=1)
-    messages: list[ChatMessage] = Field(
-        ..., min_length=1, max_length=_MAX_MESSAGES_PER_REQUEST
-    )
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=_MAX_MESSAGES_PER_REQUEST)
     max_tokens: int | None = Field(default=None, gt=0)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     stream: bool = False
-    tools: list[dict[str, Any]] | None = Field(
-        default=None, max_length=_MAX_TOOLS_PER_REQUEST
-    )
+    tools: list[dict[str, Any]] | None = Field(default=None, max_length=_MAX_TOOLS_PER_REQUEST)
     tool_choice: str | dict[str, Any] | None = None
     stop: str | list[str] | None = None
     n: int | None = Field(default=None, ge=1)
