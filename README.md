@@ -94,6 +94,16 @@ What the gateway protects against out of the box:
 - Access logger redacts `authorization` / `bearer` / `api_key` / `token` /
   `secret` / `password` `extra={…}` fields automatically.
 
+## Ops scripts
+
+PowerShell helpers for running the gateway on a single AWS EC2 GPU host
+with idle-shutdown cost guardrails live in
+[`scripts/ops/`](scripts/ops/) — `setup-ssh.ps1`, `fix-and-start.ps1`,
+`restore-idle-protection.ps1`, `teardown-ssh.ps1`. Tag-based instance
+discovery (`tag:application=vllm-serving + tag:environment=<env>`) means
+zero hardcoded IDs. See [`scripts/ops/README.md`](scripts/ops/README.md)
+for the operator workflow + IAM permissions list.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
