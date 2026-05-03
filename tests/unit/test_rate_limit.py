@@ -179,7 +179,9 @@ def test_middleware_passes_request_when_limiter_allows() -> None:
     assert response.status_code == 200
     # The bearer is hashed before becoming the bucket key — the
     # plaintext token must not appear in the bucket dict.
-    expected_digest = hashlib.sha256(b"t1").hexdigest()[:16]
+    # 32 hex chars (128 bits) — bumped from 16 to close a token-grinding
+    # collision attack. See PR #6 / commit f40049e.
+    expected_digest = hashlib.sha256(b"t1").hexdigest()[:32]
     assert limiter.calls == [f"token:{expected_digest}"]
 
 

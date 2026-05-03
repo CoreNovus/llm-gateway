@@ -23,7 +23,7 @@ Errors are translated 1-to-1:
 # deferred-string evaluation). Same constraint as ``api/health.py``.
 
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -134,10 +134,17 @@ def _record_token_usage(metrics: Metrics, model: str, response: dict) -> None:
         metrics.tokens_completion_total.labels(model=model).inc(completion)
 
 
-def _safe_token_count(value: object) -> int:
+def _safe_token_count(value: Any) -> int:
     """Coerce an upstream token-count field to a non-negative ``int``.
 
     Returns 0 for ``None`` / missing / non-numeric / negative values.
+
+    Parameter is typed ``Any`` (not ``object``) because the value comes
+    straight from a parsed-JSON upstream payload — pyright rejects
+    ``int(object | Literal[0])`` since plain ``object`` does not
+    conform to ``ConvertibleToInt`` (str | Buffer | SupportsInt |
+    SupportsIndex). The ``try/except`` already covers every runtime
+    shape, so the static type can be honest about that.
     """
     try:
         count = int(value or 0)
