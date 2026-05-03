@@ -30,6 +30,7 @@ from starlette.responses import Response
 from llm_gateway.middleware.correlation import (
     CORRELATION_HEADER,
     normalise_inbound_correlation_id,
+    reset_correlation_id,
     set_correlation_id,
 )
 
@@ -40,6 +41,19 @@ _SENSITIVE_KEY_PATTERN = re.compile(
 # Standard LogRecord attributes — never redacted (a key called ``msg`` or
 # ``module`` happens to match would otherwise corrupt every log line).
 _LOGRECORD_RESERVED = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None)))
+
+# Strip ASCII control characters (CR / LF / NUL / others) from log fields
+# derived from inbound request data. With a JSON formatter the risk is
+# contained, but with the stdlib default formatter a CR/LF in
+# ``request.url.path`` forges fake log lines that confuse SIEM parsers.
+# Replace with U+FFFD (replacement char) to keep the value visibly broken
+# without dropping evidence of the attempt.
+_LOG_INJECTION_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _safe_log_value(value: str) -> str:
+    """Return ``value`` with ASCII control characters replaced by U+FFFD."""
+    return _LOG_INJECTION_CHARS.sub("�", value)
 
 
 class _RedactingFilter(logging.Filter):
@@ -78,35 +92,48 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         correlation_id = normalise_inbound_correlation_id(request.headers.get(CORRELATION_HEADER))
-        set_correlation_id(correlation_id)
+        token = set_correlation_id(correlation_id)
+        # Strip control chars from any inbound string we are about to
+        # interpolate into a log line. ``request.method`` is a small
+        # whitelisted set in practice but defended uniformly so a future
+        # field added here cannot regress.
+        safe_method = _safe_log_value(request.method)
+        safe_path = _safe_log_value(request.url.path)
 
         start = time.perf_counter()
         try:
-            response = await call_next(request)
-        except Exception:
+            try:
+                response = await call_next(request)
+            except Exception:
+                latency_ms = round((time.perf_counter() - start) * 1000, 1)
+                # The exc_info is captured automatically by .exception().
+                _logger.exception(
+                    "request failed",
+                    extra={
+                        "correlation_id": correlation_id,
+                        "method": safe_method,
+                        "path": safe_path,
+                        "latency_ms": latency_ms,
+                    },
+                )
+                raise
+
             latency_ms = round((time.perf_counter() - start) * 1000, 1)
-            # The exc_info is captured automatically by .exception().
-            _logger.exception(
-                "request failed",
+            _logger.info(
+                "request completed",
                 extra={
                     "correlation_id": correlation_id,
-                    "method": request.method,
-                    "path": request.url.path,
+                    "method": safe_method,
+                    "path": safe_path,
+                    "status": response.status_code,
                     "latency_ms": latency_ms,
                 },
             )
-            raise
-
-        latency_ms = round((time.perf_counter() - start) * 1000, 1)
-        _logger.info(
-            "request completed",
-            extra={
-                "correlation_id": correlation_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status": response.status_code,
-                "latency_ms": latency_ms,
-            },
-        )
-        response.headers[CORRELATION_HEADER] = correlation_id
-        return response
+            response.headers[CORRELATION_HEADER] = correlation_id
+            return response
+        finally:
+            # Reset the contextvar so the id does not leak into
+            # background tasks / post-response cleanup that runs in the
+            # same asyncio task. ``set_correlation_id`` returned a Token
+            # whose ``reset`` restores the prior value.
+            reset_correlation_id(token)
